@@ -5,7 +5,8 @@ import json
 import os
 import socket
 import re
-from time import time
+from time import time, sleep
+from functools import lru_cache
 
 
 # TODO: split token and creds to separate files?
@@ -140,11 +141,27 @@ headers = {
 
 #%%
 
+
+# TODO: fix size
+@lru_cache(maxsize=None)
 def get_api_response(url):
     if url.startswith("/"):
         url = API_URL + url
 
     response = requests.get(url, headers=headers)
+
+    while response.status_code == 429:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            retry_after = int(retry_after)
+            print(f"API rate limit exceeded, retrying in {retry_after} seconds")
+            sleep(retry_after)
+        else:
+            print("API rate limit exceeded, retrying in 5 seconds")
+            sleep(5)
+
+        response = requests.get(url, headers=headers)
+
 
     return response.json()
 
@@ -166,11 +183,23 @@ def get_track_uris(url):
 
 def add_to_playlist(href, uris):
     for i in range(0, len(uris), 100):
-        requests.post(href, headers=headers, json={"uris": uris[i:i + 100]})
+        response = requests.post(href, headers=headers, json={"uris": uris[i:i + 100]})
+
+        while response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            if retry_after:
+                retry_after = int(retry_after)
+                print(f"API rate limit exceeded, retrying in {retry_after} seconds")
+                sleep(retry_after)
+            else:
+                print("API rate limit exceeded, retrying in 5 seconds")
+                sleep(5)
+
+            response = requests.post(href, headers=headers, json={"uris": uris[i:i + 100]})
 
 
 @dataclass
-class Merge:
+class Union:
     Playlists: list[str]
     Url: str
 
@@ -181,23 +210,35 @@ class Artists:
     Url: str
 
 
+@dataclass
+class Genres:
+    Genres: list[str]
+    Url: str
+
+
 # TODO: use grammar instead?
-merge_pattern = re.compile(r'_MERGE_:(.*)')
-artists_pattern = re.compile(r'_ARTISTS_:(.*)')
+union_pattern = re.compile(r'.*?_UNION_:(.*)')
+artists_pattern = re.compile(r'.*?_ARTISTS_:(.*)')
+genres_pattern = re.compile(r'.*?_GENRES_:(.*)')
 
 playlists_pattern = re.compile(r'"([^"]+)"')
 items_pattern = re.compile(r'([^;]+)')
 
 
 def parse_auto_playlist_name(name: str, url: str):
-    merge_match = merge_pattern.match(name)
-    if merge_match:
-        return Merge(playlists_pattern.findall(merge_match.group(1)), url)
+    # TODO: make more general
+
+    union_match = union_pattern.match(name)
+    if union_match:
+        return Union(playlists_pattern.findall(union_match.group(1)), url)
 
     artists_match = artists_pattern.match(name)
-
     if artists_match:
         return Artists(items_pattern.findall(artists_match.group(1)), url)
+
+    genres_match = genres_pattern.match(name)
+    if genres_match:
+        return Genres(items_pattern.findall(genres_match.group(1)), url)
 
     else:
         return None
@@ -210,6 +251,7 @@ def fill_auto_playlists():
     liked_tracks = get_items("/me/tracks")
 
     for item in get_items("/me/playlists"):
+        # TODO: preload all playlists?
         # playlist_tracks.update({item["name"]: get_items(item["tracks"]["href"])})
         playlist_tracks.update({item["name"]: item["tracks"]["href"]})
 
@@ -219,7 +261,7 @@ def fill_auto_playlists():
 
     for auto_playlist in auto_playlists:
         match auto_playlist:
-            case Merge(playlists, auto_playlist_tracks_url):
+            case Union(playlists, auto_playlist_tracks_url):
                 existing_tracks = set(get_track_uris(auto_playlist_tracks_url))
                 new_tracks = []
 
@@ -235,8 +277,24 @@ def fill_auto_playlists():
                 new_tracks = []
 
                 for track in liked_tracks:
+                    # TODO: check all artists and features
                     if track["track"]["artists"][0]["name"] in artists:
                         new_tracks.append(track["track"]["uri"])
+
+                new_tracks = list(set(new_tracks) - existing_tracks)
+                add_to_playlist(auto_playlist_tracks_url, new_tracks)
+
+            case Genres(genres, auto_playlist_tracks_url):
+                existing_tracks = set(get_track_uris(auto_playlist_tracks_url))
+                new_tracks = []
+
+                for track in liked_tracks:
+                    # TODO: check all artists and features?
+                    # print(get_api_response(track["track"]["artists"][0]["href"]))
+                    for genre in get_api_response(track["track"]["artists"][0]["href"])["genres"]:
+                        if genre in genres:
+                            new_tracks.append(track["track"]["uri"])
+                            break
 
                 new_tracks = list(set(new_tracks) - existing_tracks)
                 add_to_playlist(auto_playlist_tracks_url, new_tracks)
@@ -248,12 +306,16 @@ fill_auto_playlists()
 
 
 # Implemented playlist types:
-# _MERGE_:"Test 1";"Test 2";"Test 3"
-# _Artists_:Kendrick Lamar;Kanye West
+# _UNION_:"Test 1";"Test 2";"Test 3"
+# _ARTISTS_:Kendrick Lamar;Kanye West
+# _GENRES_:rap;hip hop
 # TODO:
-# genres
+# intersection
+# difference
 # more general (json?) query
 # combinations of above
 
 
 # TODO: move auto code to end?
+# TODO: get available genres
+# TODO: don't overwrite manual edits
