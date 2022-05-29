@@ -142,7 +142,7 @@ headers = {
 #%%
 
 
-# TODO: fix size
+# TODO: fix size, custom cache, save to file, don't save playlists, only save artists?, refresh access token,
 @lru_cache(maxsize=None)
 def get_api_response(url):
     if url.startswith("/"):
@@ -198,9 +198,25 @@ def add_to_playlist(href, uris):
             response = requests.post(href, headers=headers, json={"uris": uris[i:i + 100]})
 
 
+#%%
+
+
 @dataclass
 class Union:
     Playlists: list[str]
+    Url: str
+
+
+@dataclass
+class Intersection:
+    Playlists: list[str]
+    Url: str
+
+
+@dataclass
+class Difference:
+    Playlist1: str
+    Playlist2: str
     Url: str
 
 
@@ -218,6 +234,7 @@ class Genres:
 
 # TODO: use grammar instead?
 union_pattern = re.compile(r'.*?_UNION_:(.*)')
+intersection_pattern = re.compile(r'.*?_INTERSECTION_:(.*)')
 artists_pattern = re.compile(r'.*?_ARTISTS_:(.*)')
 genres_pattern = re.compile(r'.*?_GENRES_:(.*)')
 
@@ -232,6 +249,10 @@ def parse_auto_playlist_name(name: str, url: str):
     if union_match:
         return Union(playlists_pattern.findall(union_match.group(1)), url)
 
+    intersection_match = intersection_pattern.match(name)
+    if intersection_match:
+        return Intersection(playlists_pattern.findall(intersection_match.group(1)), url)
+
     artists_match = artists_pattern.match(name)
     if artists_match:
         return Artists(items_pattern.findall(artists_match.group(1)), url)
@@ -245,7 +266,7 @@ def parse_auto_playlist_name(name: str, url: str):
 
 
 def fill_auto_playlists():
-    playlist_tracks = {}
+    playlist_tracks = {"_LIKED_": "/me/tracks"}
     auto_playlists = []
 
     liked_tracks = get_items("/me/tracks")
@@ -269,6 +290,17 @@ def fill_auto_playlists():
                     new_tracks += get_track_uris(playlist_tracks[playlist])
 
                 new_tracks = list(set(new_tracks) - existing_tracks)
+                if new_tracks:
+                    add_to_playlist(auto_playlist_tracks_url, new_tracks)
+
+            case Intersection(playlists, auto_playlist_tracks_url):
+                existing_tracks = set(get_track_uris(auto_playlist_tracks_url))
+                new_tracks = set(get_track_uris(playlist_tracks[playlists[0]]))
+
+                for playlist in playlists[1:]:
+                    new_tracks = new_tracks.intersection(get_track_uris(playlist_tracks[playlist]))
+
+                new_tracks = list(new_tracks - existing_tracks)
                 if new_tracks:
                     add_to_playlist(auto_playlist_tracks_url, new_tracks)
 
