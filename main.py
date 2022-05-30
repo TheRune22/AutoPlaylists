@@ -235,6 +235,7 @@ class Genres:
 # TODO: use grammar instead?
 union_pattern = re.compile(r'.*?_UNION_:(.*)')
 intersection_pattern = re.compile(r'.*?_INTERSECTION_:(.*)')
+difference_pattern = re.compile(r'.*?_DIFFERENCE_:"([^"]+)";"([^"]+)"')
 artists_pattern = re.compile(r'.*?_ARTISTS_:(.*)')
 genres_pattern = re.compile(r'.*?_GENRES_:(.*)')
 
@@ -252,6 +253,10 @@ def parse_auto_playlist_name(name: str, url: str):
     intersection_match = intersection_pattern.match(name)
     if intersection_match:
         return Intersection(playlists_pattern.findall(intersection_match.group(1)), url)
+
+    difference_match = difference_pattern.match(name)
+    if difference_match:
+        return Difference(difference_match.group(1), difference_match.group(2), url)
 
     artists_match = artists_pattern.match(name)
     if artists_match:
@@ -304,14 +309,24 @@ def fill_auto_playlists():
                 if new_tracks:
                     add_to_playlist(auto_playlist_tracks_url, new_tracks)
 
+            case Difference(playlist1, playlist2, auto_playlist_tracks_url):
+                existing_tracks = set(get_track_uris(auto_playlist_tracks_url))
+
+                new_tracks = set(get_track_uris(playlist_tracks[playlist1])) - set(get_track_uris(playlist_tracks[playlist2]))
+
+                new_tracks = list(new_tracks - existing_tracks)
+                if new_tracks:
+                    add_to_playlist(auto_playlist_tracks_url, new_tracks)
+
             case Artists(artists, auto_playlist_tracks_url):
                 existing_tracks = set(get_track_uris(auto_playlist_tracks_url))
                 new_tracks = []
 
                 for track in liked_tracks:
-                    # TODO: check all artists and features
-                    if track["track"]["artists"][0]["name"] in artists:
-                        new_tracks.append(track["track"]["uri"])
+                    # TODO: (optionally) check all artists and features
+                    for artist in track["track"]["artists"]:
+                        if artist["name"] in artists:
+                            new_tracks.append(track["track"]["uri"])
 
                 new_tracks = list(set(new_tracks) - existing_tracks)
                 add_to_playlist(auto_playlist_tracks_url, new_tracks)
@@ -322,7 +337,6 @@ def fill_auto_playlists():
 
                 for track in liked_tracks:
                     # TODO: check all artists and features?
-                    # print(get_api_response(track["track"]["artists"][0]["href"]))
                     for genre in get_api_response(track["track"]["artists"][0]["href"])["genres"]:
                         if genre in genres:
                             new_tracks.append(track["track"]["uri"])
